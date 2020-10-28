@@ -1,0 +1,452 @@
+---
+title: "Project Report"
+author: "Vanessa Linke"
+date: October 5, 2020
+output: rmdformats::material 
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(stringsAsFactors = F)
+knitr::opts_knit$set(root.dir = "/Users/vanili/Desktop/cloggedprots")
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(knitr)
+library(dplyr)
+```
+
+# Info
+
+This project report was created by Vanessa Linke in collaboration with Piotr Brągoszewski and explores a proteomics dataset of human cell samples.
+
+> In the case of the experiment in a human cell line (HEK293 FlpIn) our model protein that stalls during import was ATP5MG-tFT (labeled as 'ATP') it is composed of entire ATP5MG (aka ATP5L), FLAG tag and of tFT (fusion of mCherry and sfGFP). One control was the same cell line but with no transgene (labeled 'FLP'). Another control was a tFT preceded by N-term degron sequence which targets it to proteasomal degradation (but not very efficiently) this fusion is not targeted to mitochondria (labeled as 'ILE').  Samples labeled as 'INP' are total cell extracts to see if levels of some proteins change. Samples labeled as 'ELU' are the ones that were enriched for GFP and its interacting partners.
+
+## Code
+
+The code was written in R and left visible for future use and discussion. This HTML document was created using RMarkdown in RStudio. Learn more at <http://www.rmarkdown.rstudio.com>. Formatting via rmdformats::material by Barnier, Julien. 2020. *Rmdformats: HTML Output Formats and Templates for Rmarkdown Documents.* <https://github.com/juba/rmdformats>. 
+
+**Note**, several visualizations are interactive and can be explored via mouse-over (hovering) and clicking.
+
+Questions and suggestions via email to [vlinke@wisc.edu](mailto:vlinke@wisc.edu).
+
+## Open questions
+
+- Was the data normalized or batch corrected?
+- Which log-transformation was applied (log2, log10, ln)?
+- What were sample prep batches and run order?
+
+## Next steps
+
+- more interactiveness via shiny
+- analogous report for yeast data
+- comparison between yeast and human hits
+
+# Load the data
+
+We will first load the *human* data, separated by numerical (LFQ) and metadata (MQ) information.
+
+```{r loaddata}
+LFQ <- read.csv(file = "Raw_data/Human_LFQ_t.csv")
+rownames(LFQ) <- LFQ$Sample
+LFQ_long <- pivot_longer(LFQ, !c(Group, Sample), names_to = "Protein.ID", values_to = "LFQvalue")
+LFQ_long$LFQvalue <- as.numeric(LFQ_long$LFQvalue) #long format is often more useful
+
+MQ <-read.csv(file = "Raw_data/Human_MQ.csv")
+rownames(MQ) <- MQ$Protein.IDs
+MQ$Protein.ID <- gsub(";", ".", MQ$Protein.IDs)
+MQ$Protein.ID <- gsub(":", ".", MQ$Protein.ID)
+colnames(MQ) #what kind of metadata is available?
+```
+
+Both datasets are linked by unique `r names(MQ)[1]`. This separation in quantitative and metadata is advisable for automated processing.
+
+Some quick sanity checks:
+
+```{r datacheck}
+anyDuplicated(MQ$Protein.ID)
+all(MQ$Protein.ID %in% colnames(LFQ))
+all(colnames(LFQ[,-c(1:2)]) %in% MQ$Protein.ID) #col 1 is Sample, col 2 is Group
+
+kable(table(is.na(LFQ_long$LFQvalue))) #how many missing values?
+
+```
+
+```{r datagroups}
+unique(LFQ$Group) #What sample groups are in the data?
+```
+
+# Missing value visualization {.tabset .tabset-fade .tabset-pills}
+
+As noted above, the data contains a large number of `r sum(is.na(LFQ_long$LFQvalue))` (or `r sum(is.na(LFQ_long$LFQvalue))/length(LFQ_long$LFQvalue)*100` %) missing values. To explore their distribution and likely origin, we will visualize their occurence and behavior.
+
+First, we will look at the distribution of missing values by individual samples. 
+
+```{r missingvalue1, message=FALSE}
+
+library(naniar) #for gg_miss_var
+
+library(VIM) #for matrixplots and marginplots
+
+gg_miss_var(data.frame(t(LFQ[1:24,-c(1:2)])), show_pct = T)
+```
+
+We notice that there is a large spread from least to most missing values that is not explained by the experimental groups. The samples with the most missing values have over 1/3 of data missing. It is notable that the top 3 samples are ILE_ELU_1, ATP_ELU_1, and FLP_ELU_1, all *_ELU_1 - a possible batch effect should be investigated.
+
+The following segment contains several plots to investigate the missing values by protein. The different plots are separated via tabs, please follow their links to show each.
+
+## Default matrix
+
+The first matrix plot shows all ~3000 proteins by the 24 samples (6 x 4 replicates in the order of `r unique(LFQ$Group)`). The second plots focuses only the ELU samples (`r unique(LFQ$Group)[1:3]`) Missing values in red, all other values in greyscale. Default order.
+
+We can clearly observe a subset of proteins missing in most samples, as well as banding by sample group.
+```{r missingvalue2.1, message=FALSE}
+
+head(t(LFQ[1:3,]))
+
+matrixplot(t(LFQ[,-c(1:2)]))
+matrixplot(t(LFQ[1:12,-c(1:2)]))
+
+```
+
+## Sorted Matrix
+
+This second matrix plot is sorted by sample ILE_ELU_1 - the one with the most missing values.
+
+Here the effect of the large proportion of missing values in the *_ELU_1 samples becomes apparent again. It is notable that most of those proteins missing are overlapping between the samples, indicating they may be of lower abundance (to be investigated further).
+
+Additionally, there is a subset of several hundred proteins that seems to be primarily present in the 2-4th replicate of the ATP_ELU group - these are proteins that may be of particular interest to the experimental question but may be excluded based on a rigorous filtering strategy (e. g. one that requires proteins to be detected in >50% of samples.)
+```{r missingvalue2.2, message=FALSE}
+
+matrixplot(t(LFQ[1:12,-c(1:2)]), sortby=9)
+```
+## Margin plots
+
+Margin plots as the ones displayed here can allow for a deeper investigation of the behavior of the missing values. Exemplary, we are looking at comparisons between ATP_ELU samples, replicate 1 vs 2, and 3 vs 2. For comparison, the margin plot for ATP_INP replicate 1 vs 2 is shown below. 
+
+In light blue is a scatter plot of all proteins found in both replicates. In red is shown the distribution of each replicates' unique proteins. In both cases, we note the shift to low intensity proteins which points to an imputation of low intensity values as a viable remedy.
+
+```{r marginplots, message=FALSE}
+marginplot(t(LFQ[c(2,1),-c(1:2)]))
+
+marginplot(t(LFQ[2:3,-c(1:2)]))
+
+marginplot(t(LFQ[c(14,13),-c(1:2)]))
+```
+
+# Non-missing value visualization {.tabset .tabset-fade .tabset-pills}
+
+Let's look at the data distribution of the non-missing data.
+
+## Density
+
+First, interactive density plots. Since the data appears to be log-transformed, the resulting plots appear like somewhat skewed normal distributions.
+
+```{r tab1, message=FALSE}
+ggplotly(
+  ggplot(LFQ_long, aes(x=LFQvalue, color=Group)) + 
+           geom_density(alpha=0.3) +
+           facet_wrap(~ Sample, ncol=4)
+  )
+```
+
+## Violin
+
+Violin plots (here overlayed with boxplots) are another way of looking at data distribution. Especially when focusing on the group ATP_ELU, the shift of replicate 1 to higher average intensities is visible. Again, higher intensity proteins seem less affected.
+
+```{r tab2, message=FALSE}
+
+  ggplot(LFQ_long, aes(y=Sample, fill=Group, x=LFQvalue)) +
+  geom_violin() +
+  geom_boxplot(alpha=0.2, width=0.25)
+
+  ggplot(subset(LFQ_long, Group=="ATP_ELU"), aes(y=Sample, fill="red", x=LFQvalue)) +
+  geom_violin() +
+  geom_boxplot(alpha=0.2, width=0.25)
+  
+```
+
+# CV calculation {.tabset .tabset-fade .tabset-pills}
+
+Coefficient of variation (CV) is calculated as standard deviation / mean * 100% and allows for 
+
+CV calculations show that CVs of "ELU" samples are ~30% on average (of ~1900 proteins), and CVs of "INP" samples are ~14% on average (of ~2553 proteins), calculated excluding proteins with missing values. These calculations could be repeated for comparison after imputation.
+
+## n = 4
+
+Calculations including proteins that were always observed (n=4 per group).
+
+```{r CVsAlways,  message=FALSE}
+
+CV <- function(x){(sd(2^x, na.rm=F)/mean(2^x, na.rm=F))*100} #need to be unlog'd, assuming log2
+
+CVLFQ <- LFQ %>% 
+  select(-Sample) %>%
+  group_by(Group) %>%
+  summarise(across(everything(), list(CV=CV))) %>%
+  pivot_longer(cols=-Group, names_to = "Protein.ID", values_to = "CV_LFQ") 
+
+ggplotly(ggplot(CVLFQ, aes(x = CV_LFQ, color=Group)) + geom_density())
+
+res <- CVLFQ %>%
+  select(-Protein.ID) %>%
+  group_by(Group) %>%
+  summarise(mean(CV_LFQ, na.rm=T))
+
+kable(res)
+
+kable(table(is.na(CVLFQ$CV_LFQ), CVLFQ$Group), caption = "Missing values (TRUE) by group")
+```
+## n <= 4
+
+Same calculation, but also allowing for n<4 values per group.
+
+```{r CVs,  message=FALSE}
+library(dplyr)
+
+CV <- function(x){(sd(2^x, na.rm=T)/mean(2^x, na.rm=T))*100} #need to be unlog'd, assuming log2
+
+CVLFQ <- LFQ %>% 
+  select(-Sample) %>%
+  group_by(Group) %>%
+  summarise(across(everything(), list(CV=CV))) %>%
+  pivot_longer(cols=-Group, names_to = "Protein.ID", values_to = "CV_LFQ") 
+
+ggplotly(ggplot(CVLFQ, aes(x = CV_LFQ, color=Group)) + geom_density())
+
+res <- CVLFQ %>%
+  select(-Protein.ID) %>%
+  group_by(Group) %>%
+  summarise(mean(CV_LFQ, na.rm=T))
+
+kable(res)
+
+kable(table(is.na(CVLFQ$CV_LFQ), CVLFQ$Group), caption = "Missing values (TRUE) by group")
+
+```
+
+# Imputation {.tabset .tabset-fade .tabset-pills}
+
+Imputation was performed based on drawing from a subpopulation with a downshifted mean and the results plotted in interactive visualizations.
+
+The resulting plot suggests that the imputed values are correctly drawn from a low-intensity proportion in case of the INP samples, however, in case of ELU samples, the imputed values seem to be unusually shifted lower. Suggestion for second iteration: treat ELU and INP sample groups separately, and draw from different populations for imputation (acceptable cause these groups won't be compared.)
+
+It is further apparent that the imputation for the samples with a lot of missing values, e. g. ATP_ELU_1 and ILE_ELU_1, creates a particularly distinct population that will negatively affect statistical analysis.
+
+Consider first normalizing and/or filtering for proteins in subset of data. This will remove some proteins that are only present in treated group, thus all were kept here (proceed with caution.)
+
+
+```{r imputation, message=FALSE}
+
+## Data imputation function from https://datascienceplus.com/proteomics-data-analysis-2-3-data-filtering-and-missing-value-imputation/
+
+impute_data = function(df, width = 0.3, downshift = 1.8) {
+  # df = data frame containing filtered 
+  # Assumes missing data (in df) follows a narrowed and downshifted normal distribution
+
+  # Create new column indicating whether the values are imputed 
+  df$imputed = !is.finite(df$LFQvalue)
+
+  # Imputation
+  temp <- df$LFQvalue 
+  temp[!is.finite(temp)] = NA #make sure all non-finite values are really NA
+  temp.sd = width * sd(temp, na.rm = TRUE)   # shrink sd width
+  temp.mean = mean(temp, na.rm = TRUE) - 
+    downshift * sd(temp, na.rm = TRUE)   # shift mean of imputed values
+  n.missing = sum(is.na(temp))
+  temp[is.na(temp)] = rnorm(n.missing, mean = temp.mean, sd = temp.sd)
+    
+  df$LFQvalue <- temp
+    
+  return(df)
+}
+
+
+## Apply imputation
+LFQ.imp <- impute_data(data.frame(LFQ_long))
+
+# plot imputation
+#LFQ.imp_long <- pivot_longer(LFQ.imp, !c(Group, Sample), names_to = "Protein.ID", values_to = "LFQvalue") #wrong: impute needs to be new column
+#LFQ.imp_long$LFQvalue <- as.numeric(LFQ.imp_long$LFQvalue)
+
+ggplotly(
+  ggplot(LFQ.imp, aes(x=LFQvalue, fill=imputed)) + 
+           geom_histogram(alpha=0.3, binwidth = 0.25, position = 'identity') +
+           facet_wrap(~ Group, ncol = 2)
+         )
+
+ggplotly(
+  ggplot(LFQ.imp, aes(x=LFQvalue, fill=imputed)) + 
+           geom_histogram(alpha=0.3, binwidth = 0.25, position = 'identity') +
+           facet_wrap(~ Sample, ncol = 4)
+         )
+```
+
+
+# PCA visualization {.tabset .tabset-fade .tabset-pills}
+
+PCA of imputed dataset shows clear difference between ELU and INP types, but not within those groups.
+PCA does not necessarily need to show separation of these groups at this level, but this may indicate need for separate imputation, and/or better normalization/batch-correction.
+
+## Whole dataset 
+
+```{r PCA,  message=FALSE}
+
+#data needs to be in wide format for PCA
+
+LFQ.imp_wide <- pivot_wider(LFQ.imp[,c(1,3,4)], names_from = Sample, values_from = LFQvalue)
+rownames(LFQ.imp_wide) <- LFQ.imp_wide$Protein.ID
+lfq.pca <- prcomp(LFQ.imp_wide[,-1], center=TRUE,scale=TRUE)
+summary(lfq.pca)
+plot(lfq.pca$rotation[,1],lfq.pca$rotation[,2], xlab="PC1", ylab = "PC2")
+
+plot_ly(data.frame(lfq.pca$rotation), x=lfq.pca$rotation[,1], y=lfq.pca$rotation[,2], text=colnames(LFQ.imp_wide[,-1]), mode="markers", marker=list(size=11), color = unique(LFQ.imp[,c('Sample','Group')])$Group)
+
+```
+
+## ELU only
+
+Potential batch effect - hover over datapoints to see numbers.
+
+```{r PCA_elu,  message=FALSE}
+
+#data needs to be in wide format for PCA
+LFQ.imp_wide.elu <- LFQ.imp_wide[,1:13]
+
+lfq.pca.elu <- prcomp(LFQ.imp_wide.elu[,-1], center=TRUE,scale=TRUE)
+summary(lfq.pca.elu)
+plot(lfq.pca.elu$rotation[,1],lfq.pca.elu$rotation[,2], xlab="PC1", ylab = "PC2")
+
+plot_ly(data.frame(lfq.pca.elu$rotation), x=lfq.pca.elu$rotation[,1], y=lfq.pca.elu$rotation[,2], text=colnames(LFQ.imp_wide[,2:13]), mode="markers", marker=list(size=11), color = unique(LFQ.imp[,c('Sample','Group')])$Group[1:12])
+
+```
+
+# Volcano plots {.tabset .tabset-fade .tabset-pills}
+
+The resulting imputed dataset can be analyzed for statistical significance. The generated interactive volcano plots compare two groups at a time and allow for representation of p-value and fold change simultaneously. Here shown with significance cutoffs of p < 0.05 and FC > 1 (somewhat arbitrary), including lists of genes. Hover over individual dots to find out which gene and protein they represent.
+
+Combined volcano plots employ a four-tiered system, with the legend representing the following:
+- FALSE:          not IMPI listed, not significant
+- (FALSE,TRUE):   IMPI listed, not significant
+- (TRUE,FALSE):   not IMPI listed, significant
+- TRUE:           IMPI listed, significant
+
+```{r pFC, message=FALSE}
+
+ttest <- function(df, grp1, grp2){ #maybe incorrect since log2 space
+  x = df[grp1]
+  y = df[grp2]
+  x = as.numeric(x)
+  y = as.numeric(y)
+  results = t.test(x,y)
+  results$p.value
+}
+
+p.cutoff = 0.05 #set p value cutoff
+FC.cutoff = 1 # set fold change cutoff
+
+```
+
+## ATP vs FLP (ELU)
+
+```{r AvsF, message=FALSE}
+
+#calculate raw p-value ATP_ELU / FLP_ELU for each protein
+rawpvalue = data.frame(rawpvalue=apply(LFQ.imp_wide, 1, ttest, grp1=c(2:5), grp2=c(6:9))) 
+
+mean <- LFQ.imp %>%
+  select(-Sample) %>%
+  group_by(Group, Protein.ID) %>%
+  summarise(
+    mean=mean(LFQvalue)
+  )
+
+mean <- pivot_wider(mean, names_from = Group, values_from = mean)
+
+foldchange <- data.frame(foldchange=mean$ATP_ELU - mean$FLP_ELU) # calculate FC as difference between log2 averages
+
+rownames(foldchange) <- mean$Protein.ID
+
+# for volcano plot: save FC and p-values in one dataframe
+volcano <- merge(foldchange, rawpvalue, by=0)
+colnames(volcano)[1] <- "Protein.ID"
+
+volcano$sig <- ifelse(abs(volcano$foldchange)>FC.cutoff&
+                        volcano$rawpvalue<p.cutoff,
+                      yes = TRUE, no = FALSE)
+
+volcano <- merge(volcano, MQ, by = "Protein.ID")
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = sig, 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3 = (IMPI.listed=="+"))) + 
+           geom_point() + ggtitle("ATP_ELU vs FLP_ELU"))
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = IMPI.listed=="+", 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3 = sig)) + 
+           geom_point() + ggtitle("ATP_ELU vs FLP_ELU"))
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = sig, fill=(IMPI.listed=="+"), 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3=Protein.names)) +
+           geom_point() + ggtitle("ATP_ELU vs FLP_ELU"))
+
+kable(subset(volcano[sort(volcano$rawpvalue, index.return=T)$ix,c(2,3,4,13)],sig==T))
+```
+
+## ATP vs ILE (ELU)
+
+```{r AvsI, message=FALSE}
+
+#calculate raw p-value ATP_ELU / ILE_ELU for each protein
+rawpvalue = data.frame(rawpvalue=apply(LFQ.imp_wide, 1, ttest, grp1=c(2:5), grp2=c(10:13))) 
+
+mean <- LFQ.imp %>%
+  select(-Sample) %>%
+  group_by(Group, Protein.ID) %>%
+  summarise(
+    mean=mean(LFQvalue)
+  )
+
+mean <- pivot_wider(mean, names_from = Group, values_from = mean)
+
+foldchange <- data.frame(foldchange=mean$ATP_ELU - mean$ILE_ELU) # calculate FC as difference between log2 averages
+
+rownames(foldchange) <- mean$Protein.ID
+
+# for volcano plot: save FC and p-values in one dataframe
+volcano <- merge(foldchange, rawpvalue, by=0)
+colnames(volcano)[1] <- "Protein.ID"
+
+volcano$sig <- ifelse(abs(volcano$foldchange)>FC.cutoff&
+                        volcano$rawpvalue<p.cutoff,
+                      yes = TRUE, no = FALSE)
+
+volcano <- merge(volcano, MQ, by = "Protein.ID")
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = sig, 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3 = (IMPI.listed=="+"))) + 
+           geom_point() + ggtitle("ATP_ELU vs ILE_ELU"))
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = IMPI.listed=="+", 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3 = sig)) + 
+           geom_point() + ggtitle("ATP_ELU vs ILE_ELU"))
+
+ggplotly(ggplot(volcano, aes(x = foldchange, y = -log(rawpvalue), 
+                             color = sig, fill=(IMPI.listed=="+"), 
+                             label = Protein.ID, 
+                             label2 = Gene.names, label3=Protein.names)) +
+           geom_point() + ggtitle("ATP_ELU vs ILE_ELU"))
+
+kable(subset(volcano[sort(volcano$rawpvalue, index.return=T)$ix,c(2,3,4,13)],sig==T))
+```
+
